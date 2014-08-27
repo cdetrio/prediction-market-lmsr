@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>LMSR simulator - discrete outcomes</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="underscore.min.js"></script>
+    <script src="cortex.js"></script>
+    <script src="d3.min.js"></script>
+    <script src="react-0.9.0.js"></script>
+    <script src="JSXTransformer-0.9.0.js"></script>
+    <script src="react-radiogroup.js"></script>
+    <script src="postal.js"></script>
+
+    <style>
+      .axis path,
+      .axis line {
+          fill: none;
+          stroke: black;
+          shape-rendering: crispEdges;
+      }
+
+      .axis text {
+          font-family: sans-serif;
+          font-size: 11px;
+      }
+
+      table {
+        display: inline-table;
+      }
+
+      table.inventory, th, td
+      {
+        border: 1px solid black;
+      }
+      table.inventory td
+      {
+        padding-left:15px;
+        padding-right:15px;
+      }
+
+    </style>
+
+  </head>
+  <body style="width:1200px">
+
+    <div id="inventory" style="border:1px solid green; width:600px; overflow:auto; display:inline-block"> </div>
+    <div style="display:inline-block; vertical-align:top; margin-left:15px; width:550px">
+      <ul><h3>Baseball team to win the 2014 MLB World Series</h3>
+        <li>Oakland Athletics</li>
+        <li>Detroit Tigers</li>
+        <li>Los Angeles Dodgers</li>
+        <li>Boston Red Sox</li>
+      </ul>
+      <div id="chartContainer" style="display:inline-block; vertical-align:top; margin-left:15px; width:550px"></div>
+    </div>
+    
+    <script type="text/jsx">    
+      /** @jsx React.DOM */
+
+
+      /*** 
+      for LMSR reference see: http://blog.oddhead.com/2006/10/30/implementing-hansons-market-maker/
+        - that method is followed here. bets are viewed as shares which can be bought and sold, and funds are pooled into the market maker
+        - another method is to view bets as sequential payments. the first bet is paid to the market maker, the 2nd payment is paid to first bettor, etc., and the last payment is made by the market maker to the last bettor.
+
+      // chart based on this React + d3 example: http://bl.ocks.org/slashdotdash/8342292
+      ***/
+
+
+      var LineChartData = {};
+      LineChartData.seriesData = [];
+      /***
+      LineChartData.seriesData = [
+        {name: 'series1', datapoints: []},
+        {name: 'series2', datapoints: []}
+      ];
+      ***/
+
+      var LineChartCortex = new Cortex(LineChartData);
+
+      LineChartCortex.on("update", function (updatedChartCortex) {
+        //console.log('updatedChartCortex.val():', updatedChartCortex.val());
+        ChartComponent.setProps({chartData: updatedChartCortex.seriesData});
+      });
+
+
+
+
+      function addNewPointToChart(outcome_i, new_price) {
+
+        var cur_x_i = LineChartCortex.seriesData[outcome_i].val().datapoints.length;
+        var new_point = {x: cur_x_i, y: new_price};
+
+        var cur_chart = LineChartCortex.seriesData.val();
+
+        cur_chart.forEach(function(series, i) {
+          if (i === outcome_i) {
+            // add updated price of outcome being traded
+            LineChartCortex.seriesData[i].datapoints.push(new_point);
+          } else {
+            // add same price of other outcomes, all series need to be same length
+            var last_point = series.datapoints[series.datapoints.length-1];
+            var new_point_i = {};
+            new_point_i.x = last_point.x+1;
+            new_point_i.y = InventoryCortex[i].val().getPrice();
+            new_point_i.y = new_point_i.y + i*0.01; // keep lines from occluding each other
+            //console.log('i:'+i+'  new_point_i:', new_point_i);
+
+            LineChartCortex.seriesData[i].datapoints.push(new_point_i);
+          }
+        });
+
+
+      }
+
+
+      var INITIAL_B_PARAMETER = 300; // "b" in the LMSR formula   C = b * ln( e^(q1/b) + e^(q2/b) )
+
+
+      var createDiscreteScoringRule = function (n_outcomes) {
+        console.log('createDiscreteScoringRule');
+
+        var b = INITIAL_B_PARAMETER; // max exposure
+
+        // Outcomes is an array of N mutually exclusive, discrete outcomes.
+
+        Outcomes = n_outcomes.map(function (outcome_obj, i) {
+          var this_i = i;
+          //var outcomeObj = {};
+          // outcome_obj.outstandingShares is an array of trades. each element has traderId and amount.
+          // trades are pushed onto the array in the handleBuy():
+          //   InventoryCortex[outcome_i].outstandingShares.push({traderId:'alice', amount:shares_amount});
+          //    * include the $ amount spent in each trade, needed to calculate the total $ spent for each trader
+          //      * {traderId: 'alice', amount: shares_amount, cost: cost_amount}
+
+
+          outcome_obj.getPrice = function () {
+            return priceOfOutcomeN(this_i);
+          };
+
+          // input: amount of shares
+          // output: new price
+          outcome_obj.getPriceForAmount = function (shares_amount) {
+            return priceOfOutcomeNForAmount(this_i, shares_amount);
+          };
+
+
+          // input: desired price/probability
+          // output: amount of shares to buy
+          // q0 = b * ln( (e^q1/b + e^q2/b) * p/1-p )
+          outcome_obj.getSharesAmountFromPrice = function (price_prob) {
+            console.log('getSharesAmountFromPrice price_prob:', price_prob);
+            var sum_over_rest = _.chain(Outcomes)
+              .reject(function (outcome_i, indx) {
+                return (indx === this_i); // all outcomes but this one (outcome_obj)
+              })
+              .reduce(function (memo, oc_obj_i) {
+                return memo + Math.exp(oc_obj_i.getTotalAmount() / b);
+              }, 0).value();
+
+            //console.log('sum_over_rest:', sum_over_rest);
+            //var p_over = p/(1-p);
+            //console.log('p_over:', p_over);
+            //var inside = sum_over_rest * p/(1-p);
+            //console.log('inside:', inside);
+
+            var p = price_prob;
+            var sharesAmount = b * Math.log( sum_over_rest * p/(1-p) );
+            return sharesAmount;
+          } 
+
+
+          // input: cost ($ to spend)
+          // output: amount of shares to purchase
+          // x: amount of shares
+          // x = q1 - b*ln( (e^C/b * (e^q1/b + e^q2/b)) - e^q2/b )
+          //   above is the two-outcome formula. below uses N-outcome
+          outcome_obj.getSharesAmountFromCost = function (cost_to_spend) {
+            console.log('getSharesAmountFromCost cost_to_spend:', cost_to_spend);
+
+            var sum_over_all =
+              _.reduce(Outcomes, function (memo, oc_obj_i) {
+                return memo + Math.exp(oc_obj_i.getTotalAmount() / b);
+              }, 0);
+
+            var sum_over_rest = _.chain(Outcomes)
+              .reject(function (outcome_i, indx) {
+                return (indx === this_i); // all outcomes but this one (outcome_obj)
+              })
+              .reduce(function (memo, oc_obj_i) {
+                return memo + Math.exp(oc_obj_i.getTotalAmount() / b);
+              }, 0).value();
+
+            var inside = (Math.exp(cost_to_spend / b) * sum_over_all) - sum_over_rest;
+            var x_amount = outcome_obj.getTotalAmount() - b*Math.log(inside);
+            return Math.abs(x_amount);
+          };
+
+
+          outcome_obj.getCostForAmount = function (shares_amount) {
+            console.log('getCostForAmount shares_amount:', shares_amount);
+            // costForTrader = lmsrCost(q0+shares_amount, q1) - lmsrCost(q0, q1)
+            // MAX_EXPOSURE * Math.log( Math.exp(q0/MAX_EXPOSURE) + Math.exp(q1/MAX_EXPOSURE) )
+
+            var sum_new_cost =
+              _.reduce(Outcomes, function (memo, oc_obj_i, indx) {
+                var amount = oc_obj_i.getTotalAmount();
+                if (this_i === indx) {
+                  amount = amount + shares_amount;
+                }
+                return memo + Math.exp(amount / b);
+              }, 0);
+
+            var sum_current_cost =
+              _.reduce(Outcomes, function (memo, oc_obj_i) {
+                return memo + Math.exp(oc_obj_i.getTotalAmount() / b);
+              }, 0);
+
+            var costWithShares = b * Math.log(sum_new_cost);
+            console.log('costWithShares:', costWithShares);
+            var currentCost = b * Math.log(sum_current_cost);
+            console.log('currentCost:', currentCost);
+
+            var costForTrader = costWithShares - currentCost;
+            return costForTrader;
+          };
+
+          outcome_obj.getTotalAmount = function () {
+            return totalAmount(outcome_obj.outstandingShares);
+          };
+
+
+          outcome_obj.getAmountForTrader = function (trader_name) {
+            var total_amount_for_trader = _.chain(outcome_obj.outstandingShares)
+              .filter(function (block_of_shares) {
+                return (block_of_shares.traderId === trader_name);
+              })
+              .reduce(function (memo, block_of_shares) {
+                return memo + block_of_shares.amount;
+              }, 0);
+            return total_amount_for_trader.value();
+          };
+
+
+          outcome_obj.getTotalCostForTrader = function (trader_name) {
+            var total_cost_for_trader = _.chain(outcome_obj.outstandingShares)
+              .filter(function (trade_block) {
+                return (trade_block.traderId === trader_name);
+              })
+              .reduce(function (memo, trade_block) {
+                return memo + trade_block.cost;
+              }, 0);
+            return total_cost_for_trader.value();
+          };
+
+
+          outcome_obj.getTotalCostAllTraders = function () {
+            var total_cost_for_all_traders =
+              _.reduce(outcome_obj.outstandingShares, function (memo, trade_block) {
+                return memo + trade_block.cost;
+              }, 0);
+
+            return total_cost_for_all_traders;
+          };
+
+
+
+          return outcome_obj;
+        });
+
+
+
+        function totalAmount (outcomes) {
+          var total =
+            _.reduce(outcomes, function(memo, oc_obj_i) {
+              return memo + oc_obj_i.amount;
+            }, 0);
+
+          if (isNaN(parseInt(total))) {
+            total = 0;
+          }
+          return total;
+        }
+
+
+        function sumOverOutcomes(outcomes) {
+          var sum_over_i =
+            _.reduce(outcomes, function (memo, oc_obj_i) {
+              return memo + Math.exp(oc_obj_i.getTotalAmount() / b);
+            }, 0);
+          return sum_over_i;
+        }
+
+
+        function priceOfOutcomeNForAmount (oc_n, shares_amount) {
+          //price = e^(q0/b)/[e^q0/b + e^q1/b]
+          //Math.exp(q0/MAX_EXPOSURE)/(Math.exp(q0/MAX_EXPOSURE)+Math.exp(q1/MAX_EXPOSURE))
+
+          var amountOfShares = Outcomes[oc_n].getTotalAmount()+shares_amount;
+
+          var sum_over_i =
+            _.reduce(Outcomes, function (memo, oc_obj_i, indx) {
+              var total_amount = oc_obj_i.getTotalAmount();
+              if (indx === oc_n) {
+                total_amount = total_amount+shares_amount;
+              }
+              return memo + Math.exp( total_amount / b);
+            }, 0);
+
+          var price_for_amount = Math.exp(amountOfShares/b) / sum_over_i;
+          return price_for_amount;
+        }
+
+
+        function priceOfOutcomeN (oc_n) {
+          var instantaneous_price = Math.exp(Outcomes[oc_n].getTotalAmount()/b) / sumOverOutcomes(Outcomes);
+          return instantaneous_price;
+        }
+
+
+        Outcomes.forEach(function (outcome, i) {
+          LineChartCortex.seriesData.push({name: outcome.name, datapoints: []});
+        });
+
+
+        Outcomes.forEach(function (outcome, i) {
+          var price_i = priceOfOutcomeN(i);
+          //price_i = price_i + Math.random() * 0.03; // so lines with the same price don't occlude each other
+          price_i = price_i + i*0.01; // so lines with the same price don't occlude each other
+          console.log('price:', price_i);
+
+          LineChartCortex.seriesData[i].datapoints.push({x:0, y: price_i});
+          LineChartCortex.seriesData[i].datapoints.push({x:1, y: price_i});
+        });
+
+
+        return Outcomes;
+
+      };
+
+
+      //var marketInventory = createScoringRule(5);
+      console.log('calling createDiscreteScoringRule');
+      var initialMarket = [
+        //{name:'qb0', outstandingShares:[{traderId:'alice', amount:10, cost:2.5}]},
+        {name:'Oakland', outstandingShares:[]},
+        {name:'Detroit', outstandingShares:[]},
+        {name:'L.A.', outstandingShares:[]},
+        {name:'Boston', outstandingShares:[]}
+      ];
+
+      var marketInventory = createDiscreteScoringRule(initialMarket);
+
+      console.log('marketInventory:', marketInventory);
+
+      var InventoryCortex = new Cortex(marketInventory);
+
+
+      InventoryCortex.on("update", function (updatedInventoryCortex) {
+        console.log('InventoryCortex update.');
+        //console.log('updatedInventoryCortex.val():', updatedInventoryCortex.val());
+        InventoryComponent.setProps({inventoryData: updatedInventoryCortex});
+
+        addNewPointToChart(0, updatedInventoryCortex[0].val().getPrice());
+      });
+
+
+
+
+
+
+      // start at 0. trader arrives to buy 10 shares of outcome 1. must pay:
+      // C(10,0) - C(0,0)
+
+      // # two-outcome formula. generalized to N-outcome in this demo.
+      // price = e^(q0/b)/[e^q0/b + e^q1/b]
+
+
+      var Inventory = React.createClass({
+
+        getInitialState: function() {
+          return { 
+            makerFunds: 1000,
+            amountPrice: 0,
+            amountShares: 0,
+            amountCost: 0
+          };
+        },
+
+
+        componentDidMount: function () {
+          console.log('Inventory componentDidMount.');
+          console.log('this.props:', this.props);
+          //this.updatePrice();
+          //this.updatePrice();
+        },
+
+
+        render: function() {
+
+          var outcomeNames = this.props.inventoryData.val().map(function(outcome_i, i) {
+            return outcome_i.name;
+          })
+
+
+
+
+          var total_spent_all_outcomes =
+            _.reduce(this.props.inventoryData.val(), function (memo, outcome_i) {
+              var spent_outcome_i = outcome_i.getTotalCostAllTraders();
+              return memo + spent_outcome_i;
+            }, 0);
+
+
+          // bounded loss: b * log(n)
+          var boundedLoss = INITIAL_B_PARAMETER * Math.log(_.size(outcomeNames));
+
+          var MakerFunds = boundedLoss + total_spent_all_outcomes;
+
+          var outcomeExposures =
+            this.props.inventoryData.val().map(function(outcome_i, i) {
+              return outcome_i.getTotalAmount();
+            });
+
+          var worstCaseProfit = MakerFunds - _.max(outcomeExposures);
+          var bestCaseProfit = MakerFunds - _.min(outcomeExposures);
+
+
+
+          var InventoryTable = this.props.inventoryData.val().map(function(outcome_i, i) {
+            //console.log('InventoryData outcome_i.outstandingShares:', outcome_i.outstandingShares);
+            return (
+              <tr>
+                <td key={"outcome"+i}>{outcome_i.name}</td>
+                <td key={"shares"+i}>{outcome_i.getTotalAmount()}</td>
+                <td key={"price"+i}>{outcome_i.getPrice().toFixed(3)}</td>
+                <td key={"makerExposure"+i}>${outcome_i.getTotalAmount()}</td>
+              </tr>
+            );
+          });
+
+          return (
+            <div>
+              <br/>
+
+              <div style={{border: "2px solid MediumAquaMarine", overflow:"auto"}}>
+
+                <span style={{'font-size':"1.3em", 'font-weight':"bold"}}>Market Overview:</span><br/>
+                <div style={{float:"left", width:"99%"}}>
+
+                  <div  style={{}}>
+                    <table className="inventory">
+                      <th>Outcome</th>
+                      <th>Outstanding Shares</th>
+                      <th>Price/Probability</th>
+                      <th>Maker Exposure</th>
+                      {InventoryTable}
+                    </table>
+                  </div>
+
+                  <br/>
+
+                  <div style={{"margin-left":"1%", "margin-bottom":"1%"}}>
+                    <table style={{border: "1px solid brown"}}>
+                      <tr>
+                        <td>Maker B parameter<br/>
+                        (sets market depth/liquidity):
+                        </td>
+                        <td>{INITIAL_B_PARAMETER}</td>
+                      </tr>
+                      <tr>
+                        <td>Maker bounded loss [b*log(n)]<br/>
+                        (subsidy required for B):
+                        </td>
+                        <td>${boundedLoss}</td>
+                      </tr>
+                    </table>
+
+                    <br/><br/>
+                    <table style={{border: "1px solid red"}}>
+                      <tr>
+                        <td>Maker Funds<br/>
+                        [subsidy + trades]:
+                        </td>
+                        <td>${ MakerFunds.toFixed(2) }</td>
+                      </tr>
+                      <tr>
+                        <td>
+                          Maker keep after payout<br/>
+                          [funds - exposure]:<br/>
+                          (assuming no more trades)<br/>
+                        </td>
+                        <td>
+                          worst-case: ${ worstCaseProfit.toFixed(2) }<br/>           
+                          best-case: ${ bestCaseProfit.toFixed(2) }
+                        </td>
+                      </tr>
+                    </table>  
+
+                  </div>
+
+                </div>
+              </div>
+
+              <br/>
+              <div style={{clear: "both"}}></div>
+              <br/>
+
+              <div style={{border: "1px solid Maroon"}}>
+                <span style={{'font-size':"1.3em", 'font-weight':"bold"}}>Trader accounts &amp; actions:</span><br/>
+                <Traders ref="tradersComponent" outcomeNames={outcomeNames} outcomeData={this.props.inventoryData}/>
+              </div>
+              
+              <br/>
+
+            </div>
+          );
+        }
+      });
+
+
+      var Traders = React.createClass({
+
+        getInitialState : function() {
+          return {
+            selectedOutcome: 0,
+            selectedTrader: 0,
+            traderNames: ['alice', 'bob', 'dave', 'eric']
+          };
+        },
+
+        setValue : function (val) {
+          console.log('Traders setValue val:', val);
+          this.setState(val);
+        },
+
+        handleSelectTrader: function (ev) {
+          console.log('handleSelectTrader ev.target.value:', ev.target.value);
+          this.setState({selectedTrader: ev.target.value});
+        },
+
+        handleSelectOutcome: function (ev) {
+          console.log('Traders handleSelectOutcome ev.target.value:', ev.target.value);
+
+          //var outcomeName = this.props.accountData[this.state.selectedOutcome].name;
+
+          this.setState({selectedOutcome: ev.target.value}, function() { this.handleAmountChange(); });
+
+          //console.log('handleSelectOutcome this.props.accountData:', this.props.accountData);
+        },
+
+
+
+        handleAmountChange: function (shares) {
+          console.log('handleAmountChange shares:', shares);
+          console.log('handleAmountChange this.state.selectedOutcome:', this.state.selectedOutcome);
+          if (shares === undefined) {
+            shares = parseInt(this.refs.shares.getDOMNode().value.trim());
+          }
+          if (isNaN(shares) || shares === '') {
+            this.setState({
+              amountShares: '',
+              amountPrice: '',
+              amountCost: ''
+            });
+            return;
+          }
+
+
+          //console.log('this.selectedOutcome:', this.selectedOutcome);
+
+          var price = this.props.outcomeData.val()[this.state.selectedOutcome].getPriceForAmount(shares);
+          console.log('handleAmountChange price:', price);
+
+          var costForTrader = this.props.outcomeData.val()[this.state.selectedOutcome].getCostForAmount(shares);
+
+          console.log('costForTrader:', costForTrader);
+
+          this.setState({
+            amountShares: shares,
+            amountPrice: price.toFixed(3),
+            amountCost: costForTrader.toFixed(2)
+          });
+
+        },
+
+
+        handleCostField: function (event) {
+          //var shares = this.refs.shares.getDOMNode().value.trim();
+          //var price = this.refs.price.getDOMNode().value.trim();
+          var cost = parseFloat(event.target.value);
+          console.log('handleCost cost:', cost);
+
+          var sharesAmount = this.props.outcomeData.val()[this.state.selectedOutcome].getSharesAmountFromCost(cost);
+
+          console.log('sharesAmount from cost:', sharesAmount);
+
+          this.handleAmountChange(sharesAmount.toFixed(1));
+          this.setState({amountCost: event.target.value});
+        },
+
+        handlePriceField: function (event) {
+          //this.setState({amountPrice: event.target.value});
+          var price = parseFloat(event.target.value);
+          console.log('handlePriceField price:', price);
+
+          var shares_amount = this.props.outcomeData.val()[this.state.selectedOutcome].getSharesAmountFromPrice(price);
+          console.log('getSharesAmountFromPrice result shares_amount:', shares_amount);
+          this.handleAmountChange(shares_amount.toFixed(1));
+
+          this.setState({amountPrice: event.target.value});
+        },
+
+        handleSharesField: function (event) {
+          //var cost = this.refs.cost.getDOMNode().value.trim();
+          //var price = this.refs.price.getDOMNode().value.trim();
+          console.log('handleSharesField event.target.value:', event.target.value);
+          if (event.target.value === '-') {
+            this.setState({amountShares: '-'});
+            return;
+          }
+          var shares = parseInt(event.target.value);
+          if (isNaN(shares)) {
+            shares = '';
+          }
+          this.handleAmountChange(shares);
+        },
+      
+
+
+        executeTrade: function (shares_amount) {
+
+          /***
+          // many different variable names for basically the same data object.
+          * createDiscreteScoringRule ->
+              marketInventory (aka the Outcomes object) ->
+                  InventoryCortex (Outcomes object wrapped by cortex) ->
+                      props.inventoryData (inventoryCortex passed to the InventoryComponent React component ->
+                          props.outcomeData (inventoryData passed to the Traders React component)
+
+          ***/
+          
+
+          var selectedOutcome = this.state.selectedOutcome;
+          var selectedTraderName = this.state.traderNames[this.state.selectedTrader]
+          var scoringRule = this.props.outcomeData.val(); // val() unwraps from cortex getters and setters
+          var cost_amount = scoringRule[selectedOutcome].getCostForAmount(shares_amount);
+
+          //InventoryCortex[selectedOutcome].outstandingShares.push({traderId: 'alice', amount: shares_amount, cost: cost_amount});
+          this.props.outcomeData[selectedOutcome].outstandingShares.push({traderId: selectedTraderName, amount: shares_amount, cost: cost_amount});
+
+          this.handleAmountChange(shares_amount); // update the price/cost input
+
+        },
+
+
+        handleSellShares: function () {
+          var shares_amount = parseInt(this.refs.shares.getDOMNode().value.trim());
+          console.log('handleSellShares shares_amount:', shares_amount);
+          if (isNaN(shares_amount)) {
+            return;
+          }
+
+          if (shares_amount > 0) {
+            alert('Use negative amount to sell shares.');
+            return;
+          }
+
+          this.executeTrade(shares_amount);
+        },
+
+
+        handleBuyShares: function () {
+          var shares_amount = parseInt(this.refs.shares.getDOMNode().value.trim());
+          console.log('handleBuyShares shares_amount:', shares_amount);
+          if (isNaN(shares_amount)) {
+            return;
+          }
+
+          if (shares_amount < 0) {
+            alert('Buy amount must be positive.');
+            return;
+          }
+
+          this.executeTrade(shares_amount);
+        },
+
+
+
+        render: function() {
+          var outcomeData = this.props.outcomeData;
+          var selectedOutcome = this.state.selectedOutcome;
+          var selectedTrader = this.state.selectedTrader;
+          var selectedTraderName = this.state.traderNames[selectedTrader];
+
+          var sellDisabled = true;
+          var traderOutcomeShares = outcomeData.val()[selectedOutcome].getAmountForTrader(selectedTraderName);
+          console.log('traderOutcomeShares:', traderOutcomeShares);
+          if (traderOutcomeShares > 0) {
+            sellDisabled = false;
+          }
+
+          var TableHeaderOutcomes =
+            this.props.outcomeNames.map(function(outcome_name) {
+              return (
+                <td>{outcome_name}</td>
+              );
+            });
+
+          var OutcomeRadioGroup =
+            this.props.outcomeNames.map(function(outcome_name, i) {
+              var checked = (i === selectedOutcome);
+              return (
+                <span>
+                  <input type="radio" value={i} style={{'margin-top': '8px'}} defaultChecked={checked}/>
+                  {outcome_name}
+                </span>
+              );
+            });
+
+          var TraderNames = this.state.traderNames;
+
+          var TraderRadioGroup =
+            TraderNames.map(function(trader_name, i) {
+              var checked = (i === selectedTrader);
+              return (
+                <div style={{display:"inline", "border-top":"1px solid blue", "border-bottom":"1px solid blue", "margin-top":"0px", "margin-bottom":"4px" }}>
+                  <input type="radio" value={i} defaultChecked={checked}/>{trader_name}<br/>
+                </div>
+              );
+            });
+
+          var TraderAccountRows =
+            this.state.traderNames.map(function(trader_name, i) {
+
+              var TraderOutcomeHoldings =
+                outcomeData.val().map(function (outcome_i) {
+                  return (<td style={{border: "1px solid blue"}}>{outcome_i.getAmountForTrader(trader_name)}</td>);
+                });
+
+              var trader_total_spent_all_outcomes =
+                _.reduce(outcomeData.val(), function (memo, outcome_i) {
+                  var spent_outcome_i = outcome_i.getTotalCostForTrader(trader_name);
+                  return memo + spent_outcome_i;
+                }, 0);
+
+              return (
+                <tr>
+                  {TraderOutcomeHoldings}
+                  <td style={{border: "1px solid blue"}}>{trader_total_spent_all_outcomes.toFixed(2)}</td>
+                </tr>
+              );
+            });
+
+
+
+          return (
+            <div>
+              <div style={{display: 'inline-block', 'margin-left': '10px', 'vertical-align': "top"}}>
+                <table style={{display: 'inline-block', "border-spacing": "3px"}}>
+                  <tr>
+                    {TableHeaderOutcomes}
+                    <td>$ spent</td>
+                  </tr>
+                  {TraderAccountRows}
+                </table>
+              </div>
+
+              <div style={{display:"inline-block", "vertical-align":"top"}}>
+                <RadioGroup ref="traderAccounts" name="trader" style={{display:"inline-flex", "flex-direction":"column", 'vertical-align':"top", 'margin-top': "28px"}} onChange={this.handleSelectTrader} >
+                  {TraderRadioGroup}
+                </RadioGroup>
+              </div>
+
+              <div style={{display:"inline-block"}}>
+                <RadioGroup ref="selectOutcomeGroup" name="selectOutcome" style={{border: "1px solid DarkOliveGreen", 'margin-top':'2px'}} onChange={this.handleSelectOutcome}>
+                  {OutcomeRadioGroup}
+                </RadioGroup>
+   
+                <div style={{display:"inline-block", border: "1px solid purple", "padding-left":"5px", width:"100%"}}>
+                    # of shares:<input size="5" type="text" placeholder="amount" ref="shares" onChange={this.handleSharesField} value={this.state.amountShares} />
+                  <br/>
+                  $ to spend:<input size="5" type="text" placeholder="cost" ref="cost" onChange={this.handleCostField} value={this.state.amountCost} />
+                  <br/>
+                  change prob. to:<input size="5" type="text" placeholder="price" ref="price" onChange={this.handlePriceField} value={this.state.amountPrice} />
+                  <br/><br/>
+                  <button onClick={this.handleBuyShares}>Buy {this.props.outcomeNames[this.state.selectedOutcome]}</button>
+                  <button onClick={this.handleSellShares} disabled={sellDisabled}>Sell {this.props.outcomeNames[this.state.selectedOutcome]}</button>
+                </div>
+
+              </div>
+
+            </div>
+          );
+        }
+      });
+
+
+      var Chart = React.createClass({     
+        render: function() {
+          return (
+            <svg width={this.props.width} height={this.props.height}>{this.props.children}</svg>
+          );
+        }
+      });
+
+      var LineLegend = React.createClass({
+        render: function() {
+          var colorFunc = this.props.colorFunc;
+
+          var legendSpace = this.props.width / this.props.seriesNames.length;
+
+          var LegendHtml = this.props.seriesNames.map(function(series_name, i) {
+            var colorVal = colorFunc(series_name);
+            var x_pos = legendSpace/2 + i*legendSpace;
+            var y_pos = 0;
+            return (
+              <text key={series_name+"LegendLabel"} style={{fill:colorVal}} x={x_pos} y={y_pos} >
+                {series_name}
+              </text>
+            );
+          });
+
+          return (
+            <g>
+              {LegendHtml}
+            </g>
+          );
+        }
+      });
+
+
+      var Line = React.createClass({
+        getDefaultProps: function() {
+          return {
+            path: '',
+            color: 'blue',
+            width: 2
+          }
+        },
+
+        render: function() {
+          return (
+            <path d={this.props.path} stroke={this.props.color} strokeWidth={this.props.width} fill="none" />
+          );
+        }
+      });
+
+      var DataSeries = React.createClass({
+        getDefaultProps: function() {
+          return {
+            title: '',
+            data: [],
+            interpolate: 'step-after'
+          }
+        },
+
+        render: function() {
+
+          var self = this,
+              props = this.props,
+              yScale = props.yScale,
+              xScale = props.xScale;
+          
+          var path = d3.svg.line()
+              .x(function(d) { return xScale(d.x); })
+              .y(function(d) { return yScale(d.y); })
+              .interpolate(this.props.interpolate);
+
+          return (
+            <Line path={path(this.props.data)} color={this.props.color} />
+          )
+        }
+      });
+    
+
+
+
+      var LineChart = React.createClass({
+
+        getDefaultProps: function() {
+          var margin = {top: 20, right: 10, bottom: 20, left: 30};
+          var width = 400 - margin.left - margin.right;
+          var height = 300 - margin.top - margin.bottom;
+          return {
+            width: width,
+            height: height,
+            margin: margin
+          }
+        },
+
+        handleClick: function() {
+          console.log('test button handleClick');
+        },
+
+
+        componentDidMount: function () {
+          console.log('this.refs.yAxis.getDOMNode():', this.refs.yAxis.getDOMNode());
+          d3.select(this.refs.yAxis.getDOMNode()).call(this.yAxis);
+        },
+
+
+        render: function() {
+
+          var data = this.props.chartData.val(),
+              size = { width: this.props.width, height: this.props.height };
+
+          var xScale = d3.scale.linear()
+            //.domain([0, data.series1.length])
+            .domain([0, data[0].datapoints.length])
+            .range([0, this.props.width]);
+
+          var yScale = d3.scale.linear()
+            .domain([0, 1])
+            .range([this.props.height, 0]);
+
+          var yAxis = d3.svg.axis()
+            .scale(yScale)
+            .orient('left');
+
+          this.yAxis = yAxis;
+
+          var color = d3.scale.category10();
+          //var colors = ['cornflowerblue', 'red', 'green', 'yellow', 'orange'];
+
+          var MultipleDataSeries = data.map(function(dataSeries, i) {
+            return <DataSeries data={dataSeries.datapoints} size={size} xScale={xScale} yScale={yScale} key={dataSeries.name} ref={dataSeries.name} color={color(dataSeries.name)} />
+          });
+
+          var seriesNames = _.pluck(data, 'name');
+
+          return (
+            <div>
+              <span style={{'font-size':"1.3em", 'font-weight':"bold"}}>Outcome Prices/Probabilities:</span><br/>
+              <Chart width={this.props.width+this.props.margin.left+this.props.margin.right}
+                    height={this.props.height+this.props.margin.top+this.props.margin.bottom}>
+                <g transform={"translate(" + this.props.margin.left + "," + this.props.margin.top + ")"}>
+                  {MultipleDataSeries}
+                  <g className="axis" ref="yAxis"> </g>
+                  <LineLegend colorFunc={color} width={this.props.width} seriesNames={seriesNames}/>
+                </g>
+              </Chart>
+            </div>
+          );
+        }
+      });
+
+
+
+      var ChartComponent = React.renderComponent(
+        <LineChart chartData={LineChartCortex.seriesData} />,
+        document.getElementById('chartContainer')
+      );
+
+      var InventoryComponent = React.renderComponent(
+        <Inventory inventoryData={InventoryCortex}/>,
+        document.getElementById('inventory')
+      );
+    </script>
+  </body>
+</html>
