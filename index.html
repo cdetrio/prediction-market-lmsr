@@ -642,7 +642,7 @@
           
 
           var selectedOutcome = this.state.selectedOutcome;
-          var selectedTraderName = this.state.traderNames[this.state.selectedTrader]
+          var selectedTraderName = this.state.traderNames[this.state.selectedTrader];
           var scoringRule = this.props.outcomeData.val(); // val() unwraps from cortex getters and setters
           var cost_amount = scoringRule[selectedOutcome].getCostForAmount(shares_amount);
 
@@ -663,6 +663,16 @@
 
           if (shares_amount > 0) {
             alert('Use negative amount to sell shares.');
+            return;
+          }
+
+          var selectedTraderName = this.state.traderNames[this.state.selectedTrader];
+          console.log('selectedTraderName:', selectedTraderName);
+
+          var shares_owned = this.props.outcomeData.val()[this.state.selectedOutcome].getAmountForTrader(selectedTraderName);
+
+          if (Math.abs(shares_amount) > shares_owned) {
+            alert('cannot sell more shares than you own.');
             return;
           }
 
