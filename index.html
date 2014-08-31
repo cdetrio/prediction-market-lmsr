@@ -87,7 +87,6 @@
 
 
       function addNewPointToChart(outcome_i, new_price) {
-
         var cur_x_i = LineChartCortex.seriesData[outcome_i].val().datapoints.length;
         var new_point = {x: cur_x_i, y: new_price};
 
@@ -109,8 +108,6 @@
             LineChartCortex.seriesData[i].datapoints.push(new_point_i);
           }
         });
-
-
       }
 
 
@@ -264,7 +261,6 @@
           };
 
 
-
           return outcome_obj;
         });
 
@@ -282,7 +278,6 @@
           return total;
         }
 
-
         function sumOverOutcomes(outcomes) {
           var sum_over_i =
             _.reduce(outcomes, function (memo, oc_obj_i) {
@@ -290,7 +285,6 @@
             }, 0);
           return sum_over_i;
         }
-
 
         function priceOfOutcomeNForAmount (oc_n, shares_amount) {
           //price = e^(q0/b)/[e^q0/b + e^q1/b]
@@ -310,7 +304,6 @@
           var price_for_amount = Math.exp(amountOfShares/b) / sum_over_i;
           return price_for_amount;
         }
-
 
         function priceOfOutcomeN (oc_n) {
           var instantaneous_price = Math.exp(Outcomes[oc_n].getTotalAmount()/b) / sumOverOutcomes(Outcomes);
@@ -367,8 +360,6 @@
 
 
 
-
-
       // start at 0. trader arrives to buy 10 shares of outcome 1. must pay:
       // C(10,0) - C(0,0)
 
@@ -387,7 +378,6 @@
           };
         },
 
-
         componentDidMount: function () {
           console.log('Inventory componentDidMount.');
           console.log('this.props:', this.props);
@@ -395,22 +385,17 @@
           //this.updatePrice();
         },
 
-
         render: function() {
 
           var outcomeNames = this.props.inventoryData.val().map(function(outcome_i, i) {
             return outcome_i.name;
-          })
-
-
-
+          });
 
           var total_spent_all_outcomes =
             _.reduce(this.props.inventoryData.val(), function (memo, outcome_i) {
               var spent_outcome_i = outcome_i.getTotalCostAllTraders();
               return memo + spent_outcome_i;
             }, 0);
-
 
           // bounded loss: b * log(n)
           var boundedLoss = INITIAL_B_PARAMETER * Math.log(_.size(outcomeNames));
@@ -424,7 +409,6 @@
 
           var worstCaseProfit = MakerFunds - _.max(outcomeExposures);
           var bestCaseProfit = MakerFunds - _.min(outcomeExposures);
-
 
 
           var InventoryTable = this.props.inventoryData.val().map(function(outcome_i, i) {
@@ -520,7 +504,6 @@
 
 
       var Traders = React.createClass({
-
         getInitialState : function() {
           return {
             selectedOutcome: 0,
@@ -541,15 +524,9 @@
 
         handleSelectOutcome: function (ev) {
           console.log('Traders handleSelectOutcome ev.target.value:', ev.target.value);
-
           //var outcomeName = this.props.accountData[this.state.selectedOutcome].name;
-
           this.setState({selectedOutcome: ev.target.value}, function() { this.handleAmountChange(); });
-
-          //console.log('handleSelectOutcome this.props.accountData:', this.props.accountData);
         },
-
-
 
         handleAmountChange: function (shares) {
           console.log('handleAmountChange shares:', shares);
@@ -567,13 +544,10 @@
           }
 
 
-          //console.log('this.selectedOutcome:', this.selectedOutcome);
-
           var price = this.props.outcomeData.val()[this.state.selectedOutcome].getPriceForAmount(shares);
           console.log('handleAmountChange price:', price);
 
           var costForTrader = this.props.outcomeData.val()[this.state.selectedOutcome].getCostForAmount(shares);
-
           console.log('costForTrader:', costForTrader);
 
           this.setState({
@@ -592,7 +566,6 @@
           console.log('handleCost cost:', cost);
 
           var sharesAmount = this.props.outcomeData.val()[this.state.selectedOutcome].getSharesAmountFromCost(cost);
-
           console.log('sharesAmount from cost:', sharesAmount);
 
           this.handleAmountChange(sharesAmount.toFixed(1));
@@ -642,7 +615,7 @@
           
 
           var selectedOutcome = this.state.selectedOutcome;
-          var selectedTraderName = this.state.traderNames[this.state.selectedTrader]
+          var selectedTraderName = this.state.traderNames[this.state.selectedTrader];
           var scoringRule = this.props.outcomeData.val(); // val() unwraps from cortex getters and setters
           var cost_amount = scoringRule[selectedOutcome].getCostForAmount(shares_amount);
 
@@ -663,6 +636,14 @@
 
           if (shares_amount > 0) {
             alert('Use negative amount to sell shares.');
+            return;
+          }
+
+          var selectedTraderName = this.state.traderNames[this.state.selectedTrader];
+          var shares_owned = this.props.outcomeData.val()[this.state.selectedOutcome].getAmountForTrader(selectedTraderName);
+
+          if (Math.abs(shares_amount) > shares_owned) {
+            alert('cannot sell more shares than you own.');
             return;
           }
 
@@ -783,7 +764,14 @@
                   $ to spend:<input size="5" type="text" placeholder="cost" ref="cost" onChange={this.handleCostField} value={this.state.amountCost} />
                   <br/>
                   change prob. to:<input size="5" type="text" placeholder="price" ref="price" onChange={this.handlePriceField} value={this.state.amountPrice} />
-                  <br/><br/>
+                  {(this.state.amountShares > 0) &&
+                    <div>
+                      risking: <span>${this.state.amountCost}</span>  to win: <span>${this.state.amountShares}</span>
+                      <br/>
+                      decimal odds: { (this.state.amountShares / this.state.amountCost).toFixed(2) }
+                    </div>
+                  }
+                  <br/>
                   <button onClick={this.handleBuyShares}>Buy {this.props.outcomeNames[this.state.selectedOutcome]}</button>
                   <button onClick={this.handleSellShares} disabled={sellDisabled}>Sell {this.props.outcomeNames[this.state.selectedOutcome]}</button>
                 </div>
