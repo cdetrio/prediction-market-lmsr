@@ -764,7 +764,14 @@
                   $ to spend:<input size="5" type="text" placeholder="cost" ref="cost" onChange={this.handleCostField} value={this.state.amountCost} />
                   <br/>
                   change prob. to:<input size="5" type="text" placeholder="price" ref="price" onChange={this.handlePriceField} value={this.state.amountPrice} />
-                  <br/><br/>
+                  {(this.state.amountShares > 0) &&
+                    <div>
+                      risking: <span>${this.state.amountCost}</span>  to win: <span>${this.state.amountShares}</span>
+                      <br/>
+                      decimal odds: { (this.state.amountShares / this.state.amountCost).toFixed(2) }
+                    </div>
+                  }
+                  <br/>
                   <button onClick={this.handleBuyShares}>Buy {this.props.outcomeNames[this.state.selectedOutcome]}</button>
                   <button onClick={this.handleSellShares} disabled={sellDisabled}>Sell {this.props.outcomeNames[this.state.selectedOutcome]}</button>
                 </div>
